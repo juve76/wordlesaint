@@ -1,559 +1,84 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Word Discovery: Saint of the Day</title>
-    <!-- Load Tailwind CSS -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        /* Custom styles for the board cells */
-        .cell {
-            width: 100%;
-            padding-bottom: 100%; /* Makes the cells perfectly square */
-            font-size: 1.5rem;
-            font-weight: bold;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            border: 2px solid #4a5568; /* Initial dark border */
-            transition: all 0.3s ease-in-out;
-            user-select: none;
-            cursor: default;
-        }
+// This file is designed to be deployed as a serverless function, 
+// for example, on Vercel under the /api directory.
 
-        /* Styles for when a letter is entered */
-        .cell.filled {
-            border-color: #a0aec0;
-        }
+// IMPORTANT: Replace 'YOUR_GEMINI_API_KEY_HERE' with your actual API key
+// OR, better yet, set it as an environment variable named GEMINI_API_KEY 
+// in your Vercel project settings and use process.env.GEMINI_API_KEY.
 
-        /* Styles for the keyboard keys */
-        .key {
-            height: 58px;
-            min-width: 30px;
-            padding: 0 8px;
-            font-weight: 600;
-            user-select: none;
-            transition: background-color 0.2s;
-        }
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'YOUR_GEMINI_API_KEY_HERE';
+const FLASH_MODEL = "gemini-2.5-flash-preview-09-2025";
+const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${FLASH_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
 
-        /* Specific style for wide keys like ENTER and BACKSPACE */
-        .key.wide {
-            padding: 0 16px;
-        }
-    </style>
-</head>
-<body class="bg-gray-900 text-gray-100 flex flex-col items-center min-h-screen p-4 font-inter">
-    <!-- Header -->
-    <header class="w-full max-w-sm mb-6 flex flex-col items-center relative">
-        <h1 class="text-3xl font-extrabold tracking-widest uppercase text-yellow-400">WordClone</h1>
-        <p id="saint-info" class="text-xs text-gray-400 mt-1 h-4">Loading today's saint...</p>
-    </header>
+/**
+ * Handles incoming requests to forward them to the Gemini API.
+ * @param {import('http').IncomingMessage} req 
+ * @param {import('http').ServerResponse} res 
+ */
+export default async function handler(req, res) {
+    // Only allow POST requests, as required by the Gemini API
+    if (req.method !== 'POST') {
+        res.setHeader('Allow', ['POST']);
+        return res.status(405).end(`Method ${req.method} Not Allowed`);
+    }
 
-    <!-- Loading/Error Area -->
-    <div id="loading-overlay" class="absolute inset-0 bg-gray-900 bg-opacity-95 flex items-center justify-center z-50 transition-opacity duration-300">
-        <div class="text-center p-6 rounded-lg bg-gray-800 shadow-xl">
-            <svg id="loading-spinner" class="animate-spin h-8 w-8 text-yellow-400 mx-auto mb-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-            </svg>
-            <p id="loading-message" class="text-lg">Fetching today's saint's word...</p>
-        </div>
-    </div>
+    // Set CORS headers to allow your GitHub Pages site to access this proxy
+    res.setHeader('Access-Control-Allow-Origin', '*'); // Allow all origins for simplicity, but you could restrict this to your github.io URL
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-    <!-- Message Area -->
-    <div id="message-box" class="h-8 mb-4 text-center font-semibold text-lg"></div>
+    // Handle preflight requests (OPTIONS)
+    if (req.method === 'OPTIONS') {
+        return res.status(200).end();
+    }
 
-    <!-- Game Board -->
-    <div id="game-board" class="w-full max-w-xs mb-8">
-        <div id="grid" class="grid grid-cols-5 gap-1">
-            <!-- Grid cells will be generated here by JavaScript -->
-        </div>
-    </div>
+    try {
+        // Read the request body from the client (your game)
+        const requestBody = await getRequestBody(req);
 
-    <!-- Keyboard -->
-    <div id="keyboard" class="w-full max-w-md p-2 rounded-lg bg-gray-800 shadow-xl">
-        <!-- Keyboard rows will be generated here by JavaScript -->
-    </div>
-
-    <!-- Modal for Game Over -->
-    <div id="result-modal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-90 flex items-center justify-center p-4 z-50">
-        <div class="bg-gray-800 p-6 rounded-xl shadow-2xl w-full max-w-sm text-center">
-            <h2 id="modal-title" class="text-3xl font-bold mb-4"></h2>
-            <p class="text-xl mb-4">The word was: <span id="modal-word" class="font-extrabold text-green-400"></span></p>
-
-            <div id="modal-result-grid" class="mb-6 whitespace-pre font-mono text-2xl">
-                <!-- Emoji grid goes here -->
-            </div>
-            
-            <button id="share-button" class="key wide bg-blue-600 hover:bg-blue-700 text-white rounded-lg py-3 px-6 text-xl shadow-md transition duration-150">
-                Share Score on Twitter
-            </button>
-            <p id="share-info" class="text-sm text-gray-400 mt-2">Results copied! Opening Twitter...</p>
-            <button id="new-game-button" class="key wide bg-gray-600 hover:bg-gray-700 text-white rounded-lg py-2 px-4 mt-4 text-sm transition duration-150" onclick="window.location.reload()">
-                Play Again
-            </button>
-        </div>
-    </div>
-
-    <script>
-        // --- Game Constants ---
-        const MAX_GUESSES = 6;
-        const WORD_LENGTH = 5;
-        const KEYBOARD_LAYOUT = [
-            ['Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P'],
-            ['A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L'],
-            ['ENTER', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', 'BACKSPACE']
-        ];
-
-        // !!! IMPORTANT SHARING CONFIGURATION !!!
-        // Once you host this file (e.g., on GitHub Pages or Netlify), replace this placeholder URL 
-        // with the public URL where your game can be accessed.
-        const GAME_URL = "https://your-username.github.io/wordle-saint-clone/";
-        
-        // --- Game State ---
-        let secretWord = '';
-        let currentGuess = '';
-        let currentRow = 0;
-        let gameOver = false;
-        let boardState = Array(MAX_GUESSES).fill(null).map(() => Array(WORD_LENGTH).fill({ letter: '', status: 'empty' }));
-        let keyboardStatus = {}; 
-        let saintName = ''; 
-
-        // --- API Configuration ---
-        const API_KEY = ""; // Canvas environment will provide the key
-        const FLASH_MODEL = "gemini-2.5-flash-preview-09-2025";
-        const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${FLASH_MODEL}:generateContent?key=${API_KEY}`;
-        
-        // --- DOM Elements ---
-        const gridEl = document.getElementById('grid');
-        const keyboardEl = document.getElementById('keyboard');
-        const messageBoxEl = document.getElementById('message-box');
-        const modalEl = document.getElementById('result-modal');
-        const modalTitleEl = document.getElementById('modal-title');
-        const modalWordEl = document.getElementById('modal-word');
-        const modalResultGridEl = document.getElementById('modal-result-grid');
-        const shareButtonEl = document.getElementById('share-button');
-        const shareInfoEl = document.getElementById('share-info');
-        const loadingOverlayEl = document.getElementById('loading-overlay');
-        const loadingMessageEl = document.getElementById('loading-message');
-        const saintInfoEl = document.getElementById('saint-info');
-
-        /**
-         * Generic function for making API calls with exponential backoff.
-         */
-        async function callApiWithBackoff(payload, retries = 5, delay = 1000) {
-            for (let i = 0; i < retries; i++) {
-                try {
-                    const response = await fetch(API_URL, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
-                    });
-
-                    if (response.ok) {
-                        return await response.json();
-                    } else if (response.status === 429 && i < retries - 1) {
-                        await new Promise(resolve => setTimeout(resolve, delay));
-                        delay *= 2; 
-                    } else {
-                        const errorData = await response.json();
-                        throw new Error(`API Error ${response.status}: ${errorData.error.message}`);
-                    }
-                } catch (error) {
-                    if (i === retries - 1) throw error; 
-                }
-            }
-        }
-
-        /**
-         * Fetches information about the saint of the day and extracts a secret word.
-         */
-        async function fetchSecretWord() {
-            try {
-                // 1. Get today's date for the query
-                const now = new Date();
-                const todayString = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-                
-                saintInfoEl.textContent = `Today is ${todayString}.`;
-
-                // 2. First API Call: Search for the saint of the day
-                loadingMessageEl.textContent = "Step 1/2: Finding Saint of the Day...";
-                const saintQuery = `What is the name and a concise, single-paragraph summary of the life of the Catholic saint celebrated on ${todayString}?`;
-                
-                const searchPayload = {
-                    contents: [{ parts: [{ text: saintQuery }] }],
-                    tools: [{ "google_search": {} }],
-                    systemInstruction: { parts: [{ text: "Respond only with the saint's name and a concise, single-paragraph summary of their life and associated themes." }] },
-                };
-                
-                const searchResult = await callApiWithBackoff(searchPayload);
-                const saintSummary = searchResult.candidates?.[0]?.content?.parts?.[0]?.text;
-
-                if (!saintSummary) {
-                    throw new Error("Could not retrieve saint information.");
-                }
-
-                const firstLine = saintSummary.split('\n')[0].trim();
-                saintName = firstLine.split(':')[0] || 'Unknown Saint';
-
-                // 3. Second API Call: Extract 5-letter words from the summary
-                loadingMessageEl.textContent = "Step 2/2: Generating 5-letter words...";
-                
-                const extractionPrompt = `Based on the following text about the Saint of the Day, generate 10 unique, common, 5-letter English words that are relevant to their story or key themes. Only output the JSON array. Text: "${saintSummary}"`;
-
-                const extractionPayload = {
-                    contents: [{ parts: [{ text: extractionPrompt }] }],
-                    generationConfig: {
-                        responseMimeType: "application/json",
-                        responseSchema: {
-                            type: "ARRAY",
-                            items: {
-                                type: "OBJECT",
-                                properties: {
-                                    "word": { "type": "STRING", "description": "A 5-letter word related to the saint." }
-                                },
-                                required: ["word"]
-                            }
-                        }
-                    }
-                };
-                
-                const extractionResult = await callApiWithBackoff(extractionPayload);
-                const jsonText = extractionResult.candidates?.[0]?.content?.parts?.[0]?.text;
-                
-                if (!jsonText) {
-                    throw new Error("Could not extract words from summary.");
-                }
-                
-                const wordObjects = JSON.parse(jsonText);
-                const wordList = [...new Set(wordObjects.map(obj => obj.word.toUpperCase()).filter(w => w.length === WORD_LENGTH))];
-
-                if (wordList.length === 0) {
-                    const FALLBACK_WORDS = ["FAITH", "PRAYER", "LIGHT", "GRACE", "CROSS"];
-                    const fallbackIndex = Math.floor(Math.random() * FALLBACK_WORDS.length);
-                    secretWord = FALLBACK_WORDS[fallbackIndex];
-                    saintName = 'A Holy Word';
-                } else {
-                    const randomIndex = Math.floor(Math.random() * wordList.length);
-                    secretWord = wordList[randomIndex];
-                }
-                
-                // 4. Update UI and start game
-                saintInfoEl.textContent = firstLine; 
-                loadingOverlayEl.classList.add('hidden');
-                initGame();
-
-            } catch (error) {
-                console.error("Failed to set up game:", error);
-                loadingMessageEl.textContent = `Error: Failed to fetch word. Using fallback word. Details: ${error.message}`;
-                loadingMessageEl.classList.add('text-red-400');
-                document.getElementById('loading-spinner').classList.add('hidden');
-                
-                // Fallback initiation
-                secretWord = 'SAINT'; 
-                saintName = 'A Holy Word (Fallback)';
-                saintInfoEl.textContent = 'Using fallback word due to network error.';
-                loadingOverlayEl.classList.add('hidden');
-                initGame();
-            }
-        }
-
-
-        // --- Game Logic Functions ---
-
-        function initGame() {
-            currentGuess = '';
-            currentRow = 0;
-            gameOver = false;
-            boardState = Array(MAX_GUESSES).fill(null).map(() => Array(WORD_LENGTH).fill({ letter: '', status: 'empty' }));
-            keyboardStatus = {};
-            
-            renderBoard();
-            renderKeyboard();
-            showMessage('');
-        }
-
-        function getStatusClasses(status) {
-            switch (status) {
-                case 'correct': return 'bg-green-600 border-green-600 text-white transform scale-105';
-                case 'present': return 'bg-yellow-600 border-yellow-600 text-white';
-                case 'absent': return 'bg-gray-700 border-gray-700 text-gray-400';
-                case 'filled': return 'bg-gray-800 border-gray-500 text-white';
-                case 'empty':
-                default: return 'bg-gray-900 border-gray-700 text-white';
-            }
-        }
-
-        function renderBoard() {
-            gridEl.innerHTML = '';
-            for (let r = 0; r < MAX_GUESSES; r++) {
-                for (let c = 0; c < WORD_LENGTH; c++) {
-                    const cellData = boardState[r][c];
-                    const cell = document.createElement('div');
-                    cell.className = 'cell rounded-md';
-                    
-                    let statusClasses = getStatusClasses(cellData.status);
-
-                    if (cellData.letter && cellData.status === 'empty') {
-                        statusClasses = getStatusClasses('filled');
-                    } else if (!cellData.letter) {
-                        statusClasses = getStatusClasses('empty');
-                    }
-
-                    cell.classList.add(...statusClasses.split(' '));
-                    cell.textContent = cellData.letter;
-                    gridEl.appendChild(cell);
-                }
-            }
-        }
-
-        function renderKeyboard() {
-            keyboardEl.innerHTML = '';
-            KEYBOARD_LAYOUT.forEach(rowKeys => {
-                const rowEl = document.createElement('div');
-                rowEl.className = 'flex justify-center mb-2 gap-1';
-
-                rowKeys.forEach(key => {
-                    const keyEl = document.createElement('button');
-                    keyEl.className = 'key flex items-center justify-center rounded-lg text-sm uppercase cursor-pointer shadow-inner';
-                    keyEl.setAttribute('data-key', key);
-                    keyEl.onclick = () => handleKey(key);
-
-                    let status = keyboardStatus[key] || 'empty';
-                    let classes;
-                    switch (status) {
-                        case 'correct': classes = 'bg-green-600 text-white'; break;
-                        case 'present': classes = 'bg-yellow-600 text-white'; break;
-                        case 'absent': classes = 'bg-gray-700 text-gray-300'; break;
-                        default: classes = 'bg-gray-600 hover:bg-gray-500 text-white'; break;
-                    }
-                    
-                    keyEl.classList.add(...classes.split(' '));
-
-                    if (key === 'ENTER') {
-                        keyEl.classList.add('wide');
-                        keyEl.innerHTML = '&#9166; Enter';
-                    } else if (key === 'BACKSPACE') {
-                        keyEl.classList.add('wide');
-                        keyEl.innerHTML = '&#9003;';
-                    } else {
-                        keyEl.textContent = key;
-                    }
-
-                    rowEl.appendChild(keyEl);
-                });
-                keyboardEl.appendChild(rowEl);
-            });
-        }
-        
-        function updateBoardGrid() {
-            const startCellIndex = currentRow * WORD_LENGTH;
-            for (let i = 0; i < WORD_LENGTH; i++) {
-                const cell = gridEl.children[startCellIndex + i];
-                if (cell) {
-                    const letter = currentGuess[i] || '';
-                    cell.textContent = letter;
-                    
-                    cell.classList.remove(...getStatusClasses('empty').split(' '));
-                    cell.classList.remove(...getStatusClasses('filled').split(' '));
-
-                    if (letter) {
-                         cell.classList.add(...getStatusClasses('filled').split(' '));
-                    } else {
-                         cell.classList.add(...getStatusClasses('empty').split(' '));
-                    }
-                }
-            }
-        }
-
-        function showMessage(msg) {
-            messageBoxEl.textContent = msg;
-            if (msg) {
-                messageBoxEl.classList.add('text-red-400');
-                setTimeout(() => {
-                    messageBoxEl.classList.remove('text-red-400');
-                    messageBoxEl.textContent = '';
-                }, 2000);
-            }
-        }
-
-        function handleKey(key) {
-            if (gameOver) return;
-
-            key = key.toUpperCase();
-
-            if (key === 'BACKSPACE') {
-                if (currentGuess.length > 0) {
-                    currentGuess = currentGuess.slice(0, -1);
-                }
-            } else if (key === 'ENTER') {
-                submitGuess();
-                return;
-            } else if (key.length === 1 && key >= 'A' && key <= 'Z') {
-                if (currentGuess.length < WORD_LENGTH) {
-                    currentGuess += key;
-                }
-            }
-            
-            updateBoardGrid();
-        }
-
-        function submitGuess() {
-            if (currentGuess.length !== WORD_LENGTH) {
-                showMessage("Not enough letters!");
-                return;
-            }
-
-            const guess = currentGuess;
-            const secret = secretWord;
-            const evaluation = Array(WORD_LENGTH).fill('absent');
-            
-            const secretCounts = {};
-            for (const char of secret) {
-                secretCounts[char] = (secretCounts[char] || 0) + 1;
-            }
-
-            for (let i = 0; i < WORD_LENGTH; i++) {
-                if (guess[i] === secret[i]) {
-                    evaluation[i] = 'correct';
-                    secretCounts[guess[i]]--;
-                }
-            }
-
-            for (let i = 0; i < WORD_LENGTH; i++) {
-                if (evaluation[i] === 'correct') continue;
-
-                const char = guess[i];
-                if (secretCounts[char] > 0) {
-                    evaluation[i] = 'present';
-                    secretCounts[char]--;
-                } else {
-                    evaluation[i] = 'absent';
-                }
-            }
-
-            for (let i = 0; i < WORD_LENGTH; i++) {
-                const letter = guess[i];
-                const status = evaluation[i];
-
-                boardState[currentRow][i] = { letter: letter, status: status };
-
-                const currentKeyStatus = keyboardStatus[letter] || 'empty';
-                if (status === 'correct' || 
-                    (status === 'present' && currentKeyStatus !== 'correct') || 
-                    (status === 'absent' && currentKeyStatus === 'empty')) {
-                    keyboardStatus[letter] = status;
-                }
-            }
-
-            renderBoard();
-            renderKeyboard();
-
-            if (guess === secret) {
-                gameOver = true;
-                showResults(true);
-            } else if (currentRow >= MAX_GUESSES - 1) {
-                gameOver = true;
-                showResults(false);
-            } else {
-                currentGuess = '';
-                currentRow++;
-            }
-        }
-        
-        /**
-         * Generates the share link and copies the text, including the host URL.
-         */
-        function shareResult() {
-            // 1. Generate the emoji grid text
-            const emojiMap = {
-                'correct': '🟩',
-                'present': '🟨',
-                'absent': '⬜'
-            };
-
-            let emojiGrid = '';
-            for (let r = 0; r <= currentRow; r++) {
-                if (boardState[r][0].letter) {
-                    const rowString = boardState[r].map(cell => emojiMap[cell.status] || '⬜').join('');
-                    emojiGrid += rowString + '\n';
-                }
-            }
-            
-            // 2. Compile the full share text (including the grid and the game URL)
-            const today = new Date();
-            const day = today.getDate();
-            const month = today.getMonth() + 1;
-            
-            let resultText = `WordClone - Saint of the Day (${month}/${day})\nWord of ${saintName}\n\n${emojiGrid}\nTry the game here: ${GAME_URL}\n#SaintWordle #WordClone`;
-
-            // 3. Copy the text to the clipboard
-            const el = document.createElement('textarea');
-            el.value = resultText;
-            document.body.appendChild(el);
-            el.select();
-            
-            try {
-                document.execCommand('copy');
-                shareInfoEl.textContent = 'Results copied to clipboard! Opening Twitter...';
-            } catch (err) {
-                shareInfoEl.textContent = 'Could not copy results. Please copy manually.';
-            }
-            document.body.removeChild(el);
-
-            // 4. Open the Twitter share dialog
-            const twitterUrl = 'https://twitter.com/intent/tweet?text=' + encodeURIComponent(resultText);
-            window.open(twitterUrl, '_blank');
-        }
-
-        /**
-         * Shows the game results modal.
-         */
-        function showResults(won) {
-            if (won) {
-                modalTitleEl.textContent = 'You Won!';
-                modalTitleEl.classList.add('text-green-400');
-            } else {
-                modalTitleEl.textContent = 'Game Over';
-                modalTitleEl.classList.add('text-red-400');
-            }
-            
-            modalWordEl.textContent = secretWord;
-
-            const emojiMap = {
-                'correct': '🟩',
-                'present': '🟨',
-                'absent': '⬜'
-            };
-            let resultGridHTML = '';
-            for (let r = 0; r <= currentRow; r++) {
-                if (boardState[r][0].letter) {
-                    const rowString = boardState[r].map(cell => emojiMap[cell.status] || '⬜').join('');
-                    resultGridHTML += `<div>${rowString}</div>`;
-                }
-            }
-            modalResultGridEl.innerHTML = resultGridHTML;
-
-            modalEl.classList.remove('hidden');
-        }
-
-        document.addEventListener('keyup', (e) => {
-            if (modalEl.classList.contains('hidden') && !loadingOverlayEl.classList.contains('hidden')) {
-                let key = e.key.toUpperCase();
-                if (key === 'BACKSPACE' || key === 'DEL') {
-                    key = 'BACKSPACE';
-                } else if (key === 'ENTER') {
-                    key = 'ENTER';
-                }
-                handleKey(key);
-            }
+        // Forward the request to the official Gemini API endpoint
+        const apiResponse = await fetch(API_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(requestBody)
         });
 
-        // Event listener for the share button
-        shareButtonEl.addEventListener('click', shareResult);
+        // Check for non-200 status codes from the Gemini API
+        if (!apiResponse.ok) {
+            const errorText = await apiResponse.text();
+            console.error('Gemini API Error:', apiResponse.status, errorText);
+            return res.status(apiResponse.status).json({ 
+                error: 'Error from Gemini API', 
+                status: apiResponse.status, 
+                details: errorText 
+            });
+        }
 
-        window.onload = fetchSecretWord;
-    </script>
-</body>
-</html>
+        // Send the response from Gemini back to the client
+        const data = await apiResponse.json();
+        res.status(200).json(data);
+
+    } catch (error) {
+        console.error('Proxy Server Error:', error);
+        res.status(500).json({ error: 'Internal Server Error during proxy operation' });
+    }
+}
+
+/**
+ * Helper function to parse the incoming request body.
+ */
+function getRequestBody(req) {
+    return new Promise((resolve, reject) => {
+        let body = '';
+        req.on('data', chunk => {
+            body += chunk.toString();
+        });
+        req.on('end', () => {
+            try {
+                resolve(JSON.parse(body));
+            } catch (err) {
+                reject(new Error("Invalid JSON body"));
+            }
+        });
+        req.on('error', reject);
+    });
+}
